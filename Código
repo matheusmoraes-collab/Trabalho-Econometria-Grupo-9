@@ -1,0 +1,122 @@
+# Grupo 9 — Econometria I, IE-UFRJ, 2026.1
+# Autores: Matheus de Souza, Raiane Santiago, Joyce Claudino e Rafael Pêgo
+
+cat(">> [1] Lendo bases da Q1...\n")
+
+query_gini_2010 <- "
+SELECT
+  dados.ano AS ano,
+  dados.id_municipio AS id_municipio,
+  diretorio_id_municipio.nome AS id_municipio_nome,
+  diretorio_id_municipio.sigla_uf AS sigla_uf,
+  dados.indice_gini AS indice_gini
+FROM `basedosdados.mundo_onu_adh.municipio` AS dados
+LEFT JOIN (
+  SELECT DISTINCT id_municipio, sigla_uf, nome
+  FROM `basedosdados.br_bd_diretorios_brasil.municipio`
+) AS diretorio_id_municipio
+ON dados.id_municipio = diretorio_id_municipio.id_municipio
+WHERE dados.ano = 2010
+"
+
+arquivo_gini <- file.path(INPDIR, "gini_2010.csv")
+
+if (file.exists(arquivo_gini)) {
+  cat("Lendo Gini de input/gini_2010.csv...\n")
+  gini_raw <- readr::read_csv(
+    arquivo_gini,
+    col_types = readr::cols(id_municipio = readr::col_character())
+  )
+} else {
+  cat("Arquivo input/gini_2010.csv não encontrado. Baixando via basedosdados...\n")
+
+  if (!requireNamespace("basedosdados", quietly = TRUE)) {
+    stop(paste(
+      "Pacote 'basedosdados' não instalado.",
+      "Instale com install.packages('basedosdados') ou baixe o CSV no site e salve como input/gini_2010.csv.",
+      sep = "\n"
+    ))
+  }
+
+  if (Sys.getenv("BASEDOSDADOS_PROJECT_ID") != "") {
+    basedosdados::set_billing_id(Sys.getenv("BASEDOSDADOS_PROJECT_ID"))
+  }
+
+  gini_raw <- tryCatch(
+    basedosdados::read_sql(query_gini_2010),
+    error = function(e) {
+      stop(paste0(
+        "Não foi possível baixar o Gini pelo basedosdados.\n",
+        "Rode basedosdados::set_billing_id('SEU-PROJETO-GCP') antes do _master.R ",
+        "ou baixe a tabela no site e salve como input/gini_2010.csv.\n\n",
+        "Erro original: ", e$message
+      ))
+    }
+  )
+
+  readr::write_csv(gini_raw, arquivo_gini)
+  cat("Gini salvo em input/gini_2010.csv para reutilização.\n")
+}
+
+cat("Gini municipal 2010: ", nrow(gini_raw), " linhas, ", ncol(gini_raw), " colunas\n", sep = "")
+cat("Variáveis:", paste(names(gini_raw), collapse = ", "), "\n")
+
+if (!("id_municipio" %in% names(gini_raw))) {
+  stop("A base de Gini precisa ter a coluna 'id_municipio'.")
+}
+
+saveRDS(gini_raw, file.path(TMPDIR, "gini_raw.rds"))
+
+arquivo_censo <- file.path(INPDIR, "censo_1872.csv")
+
+if (!file.exists(arquivo_censo)) {
+  stop(paste(
+    "ARQUIVO NÃO ENCONTRADO: input/censo_1872.csv",
+    "Coloque o arquivo enviado pelo grupo dentro da pasta input/ com esse nome.",
+    sep = "\n"
+  ))
+}
+
+cat("\nLendo Censo 1872 de input/censo_1872.csv...\n")
+
+censo1872_raw <- tryCatch(
+  readr::read_delim(
+    arquivo_censo,
+    delim = ";",
+    locale = readr::locale(encoding = "Latin1"),
+    show_col_types = FALSE,
+    trim_ws = TRUE
+  ),
+  error = function(e1) {
+    readr::read_csv(
+      arquivo_censo,
+      locale = readr::locale(encoding = "Latin1"),
+      show_col_types = FALSE,
+      trim_ws = TRUE
+    )
+  }
+)
+
+if (ncol(censo1872_raw) == 1) {
+  censo1872_raw <- readr::read_csv(
+    arquivo_censo,
+    locale = readr::locale(encoding = "Latin1"),
+    show_col_types = FALSE,
+    trim_ws = TRUE
+  )
+}
+
+cat("Censo 1872: ", nrow(censo1872_raw), " linhas, ", ncol(censo1872_raw), " colunas\n", sep = "")
+cat("Variáveis:", paste(names(censo1872_raw), collapse = ", "), "\n")
+
+saveRDS(censo1872_raw, file.path(TMPDIR, "censo1872_raw.rds"))
+
+munis_geo <- geobr::read_municipality(year = 2010, showProgress = FALSE)
+
+munis_geo <- munis_geo %>%
+  mutate(id_municipio = stringr::str_pad(as.character(code_muni), width = 7, pad = "0"))
+
+cat("Geometria: ", nrow(munis_geo), " municípios\n", sep = "")
+saveRDS(munis_geo, file.path(TMPDIR, "munis_geo.rds"))
+
+cat(">> [1] Concluído.\n\n")
