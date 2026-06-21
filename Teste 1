@@ -1,12 +1,6 @@
-# =============================================================================
-# 1_abre_base_q1.R — Leitura e inspeção das bases da Questão 1
-# Grupo: [NOME DO GRUPO] — Econometria I, IE-UFRJ, 2026.1
-# Autores: [Nomes]
-# Última modificação: junho/2026
-#
-# Objetivo: Ler o índice de Gini municipal de 2010, a base histórica de 1872,
-#           baixar a geometria municipal de 2010 e salvar objetos intermediários.
-#
+# Grupo 9 — Econometria I, IE-UFRJ, 2026.1
+# Autores: Matheus de Souza, Raiane Santiago, Joyce Claudino e Rafael Pêgo
+
 # Inputs:
 #   input/gini_2010.csv        — opcional; se não existir, baixa via basedosdados
 #   input/censo_1872.csv       — Recenseamento 1872 enviado pelo grupo
