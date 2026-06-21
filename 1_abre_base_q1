@@ -1,1 +1,428 @@
+# =============================================================================
+# 2_limpa_dados_q1.R — Limpeza, merge e construção de variáveis (Q1)
+# Grupo: [NOME DO GRUPO] — Econometria I, IE-UFRJ, 2026.1
+# Autores: [Nomes]
+# Última modificação: junho/2026
+#
+# Objetivo: Limpar Gini 2010 e Censo 1872, construir share de escravizados,
+#           fazer merge, construir controles, termo quadrático e interação.
+#
+# Inputs:
+#   tmp/gini_raw.rds
+#   tmp/censo1872_raw.rds
+#   tmp/munis_geo.rds
+#   input/de_para_censo1872_municipios.csv — opcional, para correções manuais
+#
+# Outputs:
+#   tmp/base_q1.rds
+#   output/diagnostico_merge_q1.txt
+#   output/censo1872_municipios_agregados.csv
+#   output/municipios_gini_sem_match_censo1872.csv
+#   output/municipios_censo1872_sem_match_gini.csv
+#   output/sugestoes_match_censo1872.csv
+# =============================================================================
+
+cat(">> [2] Limpando e fazendo merge da Q1...\n")
+
+gini_raw  <- readRDS(file.path(TMPDIR, "gini_raw.rds"))
+censo_raw <- readRDS(file.path(TMPDIR, "censo1872_raw.rds"))
+munis_geo <- readRDS(file.path(TMPDIR, "munis_geo.rds"))
+
+# ---- 2.0 Funções auxiliares -------------------------------------------------
+pega_coluna <- function(dados, candidatas, nome_amigavel, obrigatoria = TRUE) {
+  achadas <- intersect(candidatas, names(dados))
+  if (length(achadas) == 0) {
+    if (obrigatoria) {
+      stop(paste0(
+        "Não encontrei coluna para ", nome_amigavel, ".\n",
+        "Candidatas procuradas: ", paste(candidatas, collapse = ", "), "\n",
+        "Colunas existentes: ", paste(names(dados), collapse = ", ")
+      ))
+    } else {
+      return(NA_character_)
+    }
+  }
+  achadas[[1]]
+}
+
+normaliza_nome <- function(x) {
+  x %>%
+    as.character() %>%
+    stringi::stri_trans_general("Latin-ASCII") %>%
+    stringr::str_to_upper() %>%
+    stringr::str_replace_all("\u00ba", "") %>%
+    stringr::str_replace_all("\u00aa", "") %>%
+    stringr::str_replace_all("\\bMUNICIPIO\\b", " ") %>%
+    stringr::str_replace_all("\\bFREGUEZIA\\b", " ") %>%
+    stringr::str_replace_all("\\bFREGUESIA\\b", " ") %>%
+    stringr::str_replace_all("\\bVILLA\\b", "VILA") %>%
+    stringr::str_replace_all("\\bBELLA\\b", "BELA") %>%
+    stringr::str_replace_all("\\bSANTA LUIZIA\\b", "SANTA LUZIA") %>%
+    stringr::str_replace_all("\\bCATHARINA\\b", "CATARINA") %>%
+    stringr::str_replace_all("\\bGERAES\\b", "GERAIS") %>%
+    stringr::str_replace_all("\\bGOYAZ\\b", "GOIAS") %>%
+    stringr::str_replace_all("\\bMATTO\\b", "MATO") %>%
+    stringr::str_replace_all("\\bPIAUHY\\b", "PIAUI") %>%
+    stringr::str_replace_all("\\bPARAHYBA\\b", "PARAIBA") %>%
+    stringr::str_replace_all("\\bASSUCAR\\b", "ACUCAR") %>%
+    stringr::str_replace_all("\\bTEFFE\\b", "TEFE") %>%
+    stringr::str_replace_all("\\bBARCELLOS\\b", "BARCELOS") %>%
+    stringr::str_replace_all("[^A-Z0-9 ]", " ") %>%
+    stringr::str_squish()
+}
+
+normaliza_uf_historica <- function(x) {
+  x_norm <- normaliza_nome(x)
+  dplyr::case_when(
+    x_norm == "ACRE" ~ "AC",
+    x_norm == "ALAGOAS" ~ "AL",
+    x_norm == "AMAZONAS" ~ "AM",
+    x_norm == "BAHIA" ~ "BA",
+    x_norm == "CEARA" ~ "CE",
+    x_norm == "ESPIRITO SANTO" ~ "ES",
+    x_norm == "GOIAS" ~ "GO",
+    x_norm == "MARANHAO" ~ "MA",
+    x_norm == "MATO GROSSO" ~ "MT",
+    x_norm == "MINAS GERAIS" ~ "MG",
+    stringr::str_detect(x_norm, "MUNICIPIO NEUTRO|CORTE") ~ "RJ",
+    x_norm == "PARA" ~ "PA",
+    x_norm == "PARAIBA" ~ "PB",
+    x_norm == "PARANA" ~ "PR",
+    x_norm == "PERNAMBUCO" ~ "PE",
+    x_norm == "PIAUI" ~ "PI",
+    x_norm == "RIO DE JANEIRO" ~ "RJ",
+    x_norm == "RIO GRANDE DO NORTE" ~ "RN",
+    x_norm == "RIO GRANDE DO SUL" ~ "RS",
+    x_norm == "SANTA CATARINA" ~ "SC",
+    x_norm == "SAO PAULO" ~ "SP",
+    x_norm == "SERGIPE" ~ "SE",
+    TRUE ~ NA_character_
+  )
+}
+
+# ---- 2.1 Limpar Gini --------------------------------------------------------
+cat("\nColunas do Gini 2010:", paste(names(gini_raw), collapse = ", "), "\n")
+
+col_gini <- pega_coluna(
+  gini_raw,
+  c("indice_gini", "gini", "coeficiente_gini", "idhm_gini"),
+  "índice de Gini"
+)
+
+col_nome_gini <- pega_coluna(
+  gini_raw,
+  c("id_municipio_nome", "nome", "name_muni", "municipio", "nome_municipio"),
+  "nome do município"
+)
+
+col_uf_gini <- pega_coluna(
+  gini_raw,
+  c("sigla_uf", "abbrev_state", "uf"),
+  "UF do município"
+)
+
+gini <- gini_raw %>%
+  transmute(
+    id_municipio = stringr::str_pad(as.character(id_municipio), width = 7, pad = "0"),
+    nome_municipio = as.character(.data[[col_nome_gini]]),
+    sigla_uf = as.character(.data[[col_uf_gini]]),
+    indice_gini = as.numeric(.data[[col_gini]]),
+    ano = if ("ano" %in% names(gini_raw)) as.integer(.data[["ano"]]) else 2010L,
+    nome_norm = normaliza_nome(nome_municipio)
+  ) %>%
+  distinct(id_municipio, .keep_all = TRUE)
+
+cat("Gini limpo:", nrow(gini), "municípios\n")
+
+# ---- 2.2 Limpar Censo 1872 --------------------------------------------------
+cat("\nColunas do Censo 1872:", paste(names(censo_raw), collapse = ", "), "\n")
+
+# Caso A: arquivo bruto enviado pelo grupo, com município/província e Sexo_Condicao.
+formato_bruto_1872 <- all(c(
+  "PrimeiroDeProvincia", "PrimeiroDeMunicipio", "Sexo_Condicao", "Total_Almas"
+) %in% names(censo_raw))
+
+if (formato_bruto_1872) {
+  cat("Formato identificado: Censo 1872 bruto por município x sexo/condição.\n")
+
+  censo <- censo_raw %>%
+    mutate(
+      provincia_1872 = as.character(PrimeiroDeProvincia),
+      municipio_1872 = as.character(PrimeiroDeMunicipio),
+      sigla_uf = normaliza_uf_historica(provincia_1872),
+      sexo_condicao_norm = normaliza_nome(Sexo_Condicao),
+      total_almas = readr::parse_number(as.character(Total_Almas),
+                                        locale = readr::locale(decimal_mark = ","))
+    ) %>%
+    group_by(sigla_uf, provincia_1872, municipio_1872) %>%
+    summarise(
+      pop_total_informado = sum(if_else(sexo_condicao_norm == "TOTAL", total_almas, 0), na.rm = TRUE),
+      pop_livre           = sum(if_else(sexo_condicao_norm == "TOTAL LIVRES", total_almas, 0), na.rm = TRUE),
+      pop_escrava         = sum(if_else(stringr::str_detect(sexo_condicao_norm, "ESCRAVIZAD"), total_almas, 0), na.rm = TRUE),
+      linhas_origem       = dplyr::n(),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      pop_total = dplyr::if_else(pop_total_informado > 0,
+                                 pop_total_informado,
+                                 pop_livre + pop_escrava),
+      nome_norm = normaliza_nome(municipio_1872)
+    ) %>%
+    filter(!is.na(sigla_uf), !is.na(nome_norm), nome_norm != "") %>%
+    group_by(sigla_uf, nome_norm) %>%
+    summarise(
+      municipio_1872 = paste(unique(municipio_1872), collapse = "; "),
+      provincia_1872 = paste(unique(provincia_1872), collapse = "; "),
+      pop_total      = sum(pop_total, na.rm = TRUE),
+      pop_livre      = sum(pop_livre, na.rm = TRUE),
+      pop_escrava    = sum(pop_escrava, na.rm = TRUE),
+      municipios_historicos_agregados = dplyr::n(),
+      .groups = "drop"
+    )
+
+  # Correções manuais opcionais: útil para grafias históricas que não batem com o nome atual.
+  # Formato esperado: sigla_uf,nome_censo,nome_atual
+  arquivo_de_para <- file.path(INPDIR, "de_para_censo1872_municipios.csv")
+
+  if (file.exists(arquivo_de_para)) {
+    cat("Aplicando correções manuais de input/de_para_censo1872_municipios.csv...\n")
+    de_para <- readr::read_csv(arquivo_de_para, show_col_types = FALSE) %>%
+      mutate(
+        sigla_uf = as.character(sigla_uf),
+        nome_censo_norm = normaliza_nome(nome_censo),
+        nome_atual_norm = normaliza_nome(nome_atual)
+      ) %>%
+      select(sigla_uf, nome_censo_norm, nome_atual_norm, nome_atual)
+
+    censo <- censo %>%
+      left_join(de_para, by = c("sigla_uf", "nome_norm" = "nome_censo_norm")) %>%
+      mutate(
+        nome_norm_original = nome_norm,
+        nome_norm = dplyr::coalesce(nome_atual_norm, nome_norm),
+        municipio_atual_sugerido = nome_atual
+      ) %>%
+      select(-nome_atual_norm, -nome_atual)
+  }
+
+  # Depois das correções manuais, agrega novamente para evitar duplicidades
+  # caso mais de um município histórico seja associado ao mesmo município atual.
+  censo <- censo %>%
+    group_by(sigla_uf, nome_norm) %>%
+    summarise(
+      municipio_1872 = paste(unique(municipio_1872), collapse = "; "),
+      provincia_1872 = paste(unique(provincia_1872), collapse = "; "),
+      pop_total      = sum(pop_total, na.rm = TRUE),
+      pop_livre      = sum(pop_livre, na.rm = TRUE),
+      pop_escrava    = sum(pop_escrava, na.rm = TRUE),
+      municipios_historicos_agregados = sum(municipios_historicos_agregados, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+} else {
+  # Caso B: arquivo já vem convertido para códigos atuais.
+  cat("Formato identificado: base já convertida para id_municipio atual.\n")
+
+  col_id <- pega_coluna(
+    censo_raw,
+    c("id_municipio", "cod_municipio", "codigo_municipio", "code_muni"),
+    "id_municipio"
+  )
+  col_total <- pega_coluna(
+    censo_raw,
+    c("pop_total", "populacao_total", "total", "pop", "populacao", "total_pop"),
+    "população total"
+  )
+  col_escr <- pega_coluna(
+    censo_raw,
+    c("pop_escrava", "escravos", "escravizados", "slave", "populacao_escrava", "total_escravos"),
+    "população escravizada"
+  )
+
+  censo <- censo_raw %>%
+    transmute(
+      id_municipio = stringr::str_pad(as.character(.data[[col_id]]), width = 7, pad = "0"),
+      pop_total    = as.numeric(.data[[col_total]]),
+      pop_escrava  = as.numeric(.data[[col_escr]])
+    ) %>%
+    group_by(id_municipio) %>%
+    summarise(
+      pop_total   = sum(pop_total, na.rm = TRUE),
+      pop_escrava = sum(pop_escrava, na.rm = TRUE),
+      .groups = "drop"
+    )
+}
+
+censo <- censo %>%
+  mutate(
+    share_escravos = pop_escrava / pop_total,
+    share_escravos = if_else(is.finite(share_escravos), share_escravos, NA_real_),
+    share_escravos_bruto = share_escravos,
+    share_escravos = pmin(
+      pmax(share_escravos, quantile(share_escravos, 0.01, na.rm = TRUE)),
+      quantile(share_escravos, 0.99, na.rm = TRUE)
+    )
+  )
+
+cat("Censo 1872 limpo:", nrow(censo), "municípios históricos/agregados\n")
+readr::write_csv(censo, file.path(OUTDIR, "censo1872_municipios_agregados.csv"))
+
+# ---- 2.3 Controles geográficos ----------------------------------------------
+cat("\nCalculando distância à Linha de Tordesilhas...\n")
+
+# Meridiano de Tordesilhas ≈ -46.62° de longitude.
+# Para distância em metros/km, transformamos para SIRGAS 2000 / Brazil Polyconic (EPSG:5880).
+tord <- sf::st_sfc(
+  sf::st_linestring(rbind(c(-46.62, -34), c(-46.62, 6))),
+  crs = 4326
+)
+
+centroides <- munis_geo %>%
+  sf::st_transform(5880) %>%
+  sf::st_centroid() %>%
+  mutate(
+    dist_tordesilhas_km = as.numeric(sf::st_distance(geometry, sf::st_transform(tord, 5880))) / 1000
+  ) %>%
+  sf::st_transform(4326) %>%
+  mutate(
+    lon = sf::st_coordinates(geometry)[, 1],
+    lat = sf::st_coordinates(geometry)[, 2]
+  ) %>%
+  sf::st_drop_geometry() %>%
+  select(id_municipio, name_muni, abbrev_state, dist_tordesilhas_km, lon, lat)
+
+# ---- 2.4 Dummies regionais --------------------------------------------------
+regioes <- tibble::tribble(
+  ~abbrev_state, ~regiao,
+  "AC","Norte","AP","Norte","AM","Norte","PA","Norte","RO","Norte","RR","Norte","TO","Norte",
+  "AL","Nordeste","BA","Nordeste","CE","Nordeste","MA","Nordeste","PB","Nordeste",
+  "PE","Nordeste","PI","Nordeste","RN","Nordeste","SE","Nordeste",
+  "DF","Centro-Oeste","GO","Centro-Oeste","MS","Centro-Oeste","MT","Centro-Oeste",
+  "ES","Sudeste","MG","Sudeste","RJ","Sudeste","SP","Sudeste",
+  "PR","Sul","RS","Sul","SC","Sul"
+)
+
+centroides <- centroides %>%
+  left_join(regioes, by = "abbrev_state") %>%
+  mutate(
+    regiao = factor(regiao, levels = c("Sudeste", "Norte", "Nordeste", "Sul", "Centro-Oeste")),
+    d_norte    = as.integer(regiao == "Norte"),
+    d_nordeste = as.integer(regiao == "Nordeste"),
+    d_sul      = as.integer(regiao == "Sul"),
+    d_centro   = as.integer(regiao == "Centro-Oeste")
+    # Sudeste = categoria base omitida
+  )
+
+# ---- 2.5 Merge final --------------------------------------------------------
+if ("id_municipio" %in% names(censo)) {
+  cat("\nFazendo merge por id_municipio.\n")
+  base_q1 <- gini %>%
+    left_join(censo, by = "id_municipio") %>%
+    left_join(centroides, by = "id_municipio")
+  metodo_merge <- "id_municipio"
+} else {
+  cat("\nFazendo merge por sigla_uf + nome padronizado do município.\n")
+  base_q1 <- gini %>%
+    left_join(censo, by = c("sigla_uf", "nome_norm")) %>%
+    left_join(centroides, by = "id_municipio")
+  metodo_merge <- "sigla_uf + nome_norm"
+}
+
+base_q1_sem_match <- base_q1 %>%
+  filter(is.na(share_escravos)) %>%
+  select(id_municipio, sigla_uf, nome_municipio, indice_gini, nome_norm)
+
+readr::write_csv(
+  base_q1_sem_match,
+  file.path(OUTDIR, "municipios_gini_sem_match_censo1872.csv")
+)
+
+if (!("id_municipio" %in% names(censo))) {
+  censo_sem_match <- censo %>%
+    anti_join(gini %>% select(sigla_uf, nome_norm), by = c("sigla_uf", "nome_norm"))
+
+  readr::write_csv(
+    censo_sem_match,
+    file.path(OUTDIR, "municipios_censo1872_sem_match_gini.csv")
+  )
+
+  # Sugestões de correspondência por distância de string. Não são aplicadas automaticamente.
+  if (requireNamespace("stringdist", quietly = TRUE) && nrow(censo_sem_match) > 0) {
+    sugestoes <- censo_sem_match %>%
+      group_by(sigla_uf) %>%
+      group_modify(function(.x, .y) {
+        candidatos <- gini %>% filter(sigla_uf == .y$sigla_uf)
+        if (nrow(candidatos) == 0) return(tibble::tibble())
+
+        purrr::map_dfr(seq_len(nrow(.x)), function(i) {
+          dist <- stringdist::stringdist(.x$nome_norm[i], candidatos$nome_norm, method = "jw")
+          j <- which.min(dist)
+          tibble::tibble(
+            sigla_uf = .y$sigla_uf,
+            municipio_1872 = .x$municipio_1872[i],
+            nome_norm_1872 = .x$nome_norm[i],
+            candidato_atual = candidatos$nome_municipio[j],
+            id_municipio_candidato = candidatos$id_municipio[j],
+            distancia_jw = dist[j]
+          )
+        })
+      }) %>%
+      ungroup() %>%
+      arrange(sigla_uf, distancia_jw)
+
+    readr::write_csv(sugestoes, file.path(OUTDIR, "sugestoes_match_censo1872.csv"))
+  }
+}
+
+cat("\n--- Diagnóstico do merge ---\n")
+cat("Método do merge:", metodo_merge, "\n")
+cat("Total de municípios com Gini:", nrow(gini), "\n")
+cat("Com Censo 1872:", sum(!is.na(base_q1$share_escravos)), "\n")
+cat("Sem Censo 1872 (NA):", sum(is.na(base_q1$share_escravos)), "\n")
+cat("Com geometria:", sum(!is.na(base_q1$dist_tordesilhas_km)), "\n")
+
+# Remove observações sem as variáveis principais.
+base_q1_completa <- base_q1 %>%
+  filter(!is.na(indice_gini), !is.na(share_escravos), !is.na(dist_tordesilhas_km)) %>%
+  mutate(
+    share_escravos2 = share_escravos^2,
+    escr_x_nordeste = share_escravos * d_nordeste
+  )
+
+if (nrow(base_q1_completa) == 0) {
+  stop(paste0(
+    "O merge não gerou nenhuma observação completa. ",
+    "Confira output/municipios_gini_sem_match_censo1872.csv e, se necessário, ",
+    "preencha input/de_para_censo1872_municipios.csv com colunas sigla_uf,nome_censo,nome_atual."
+  ))
+}
+
+if (nrow(base_q1_completa) < 50) {
+  warning(paste0(
+    "A base final ficou com menos de 50 municípios. ",
+    "Considere usar output/sugestoes_match_censo1872.csv para criar correções em ",
+    "input/de_para_censo1872_municipios.csv."
+  ))
+}
+
+cat("\nBase final (sem NAs nas variáveis principais):", nrow(base_q1_completa), "municípios\n")
+
+# Salva diagnóstico do merge para facilitar o preenchimento do texto.
+sink(file.path(OUTDIR, "diagnostico_merge_q1.txt"))
+cat("Diagnóstico do merge — Questão 1\n")
+cat("================================\n")
+cat("Método do merge: ", metodo_merge, "\n", sep = "")
+cat("Total de municípios com Gini: ", nrow(gini), "\n", sep = "")
+cat("Com Censo 1872: ", sum(!is.na(base_q1$share_escravos)), "\n", sep = "")
+cat("Sem Censo 1872 (NA): ", sum(is.na(base_q1$share_escravos)), "\n", sep = "")
+cat("Com geometria: ", sum(!is.na(base_q1$dist_tordesilhas_km)), "\n", sep = "")
+cat("Base final: ", nrow(base_q1_completa), "\n", sep = "")
+cat("\nArquivos auxiliares gerados:\n")
+cat("- output/censo1872_municipios_agregados.csv\n")
+cat("- output/municipios_gini_sem_match_censo1872.csv\n")
+cat("- output/municipios_censo1872_sem_match_gini.csv\n")
+cat("- output/sugestoes_match_censo1872.csv, se o pacote stringdist estiver disponível\n")
+sink()
+
+saveRDS(base_q1_completa, file.path(TMPDIR, "base_q1.rds"))
+cat(">> [2] Concluído. Base salva em tmp/base_q1.rds\n\n")
 
